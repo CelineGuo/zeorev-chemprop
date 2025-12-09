@@ -2,7 +2,7 @@ import json
 import os
 from tempfile import TemporaryDirectory
 import pickle
-from typing import List, Optional
+from typing import List, Optional, Dict
 from typing_extensions import Literal
 from packaging import version
 from warnings import warn
@@ -84,6 +84,12 @@ class CommonArgs(Tap):
     """Which GPU to use."""
     lambda_contrastive: float = 0.0
     """Weighting factor for contrastive loss when using contrastive learning."""
+    lambda_contrastive_local: float = 0.0
+    """Weighting factor for local contrastive loss when using contrastive learning."""
+    isolated_threshold: float = 0.3
+    """Density threshold for isolated zeolites."""
+    local_cl_min_pos: int = 20
+    """Minimum #positives to use per-zeolite local CL (Regime B)."""
     features_generator: List[str] = None
     """Method(s) of generating additional features."""
     features_path: List[str] = None
@@ -92,12 +98,16 @@ class CommonArgs(Tap):
     """Path to features used to indicate the phase of the data in one-hot vector form. Used in spectra datatype."""
     no_features_scaling: bool = False
     """Turn off scaling of features."""
+    zeolite_density: Dict[str, float] = None
+    """Dictionary mapping zeolite types to their densities."""
     max_data_size: int = None
     """Maximum number of data points to load."""
     num_workers: int = 8
     """Number of workers for the parallel data loading (0 means sequential)."""
     batch_size: int = 50
     """Batch size."""
+    p_max: float = 0.0
+    """Maximum probability of applying density-aware balanced sampling."""
     atom_descriptors: Literal['feature', 'descriptor'] = None
     """
     Custom extra atom descriptors.
@@ -486,6 +496,10 @@ class TrainArgs(CommonArgs):
     Optimal value is dataset-dependent; it is recommended that users test different values to find the best value for their model."""
     quantile_loss_alpha: float = 0.1
     """Target error bounds for quantile interval loss"""
+    zeolite_pos_count: Dict[str, int] = None
+    """Dictionary mapping zeolite group id (str) -> number of positive samples in training."""
+    zeolite_region_id: Dict[str, int] = None
+    """Dictionary mapping zeolite group id (str) -> region/cluster id (for region-based CL)."""
     overwrite_default_atom_features: bool = False
     """
     Overwrites the default atom descriptors with the new ones instead of concatenating them.
