@@ -52,7 +52,6 @@ def train(
     model.train()
 
     loss_sum, iter_count = 0, 0
-    lambda_contrastive = args.lambda_contrastive
     margin = getattr(args, "contrastive_margin", 0.2)
 
     for batch in tqdm(data_loader, total=len(data_loader), leave=False):
@@ -171,24 +170,62 @@ def train(
         #     temperature=getattr(args, "cl_temperature", 0.2)
         # )
             
+        # === Group IDs for contrastive learning ===
         with torch.no_grad():
             group_ids_full = features_to_group_ids(features_batch=features_batch, device=args.device)
 
+        # Initialize CL terms
+        cl_global = torch.tensor(0.0, device=args.device)
+        cl_local  = torch.tensor(0.0, device=args.device)
+
         if z_full is not None:
-            z_masked = z_full[m_row]
-            gids_masked = group_ids_full[m_row]
+            # Only use the same masked subset used for ranking
+            z_masked   = z_full[m_row]              # [B_eff, H]
+            gids_masked = group_ids_full[m_row]     # [B_eff]
+            z_norm     = F.normalize(z_masked, dim=1)
 
-            z_norm = F.normalize(z_masked, dim=1)
-
-            contrastive_loss = supervised_nt_xent(
-                z_embed=z_norm,
-                group_ids=gids_masked,
-                temperature=getattr(args, "cl_temperature", 0.2),
+            # ----------------------------------------
+            # Density per sample in this batch
+            # ----------------------------------------
+            densities = torch.tensor(
+                [args.zeolite_density[str(int(g.item()))] for g in gids_masked],
+                device=z_norm.device
             )
 
-        #=== Combine losses ===
-        total_loss = ranking_loss + lambda_contrastive * contrastive_loss
+            density_thresh = getattr(args, "local_cl_density_threshold", 0.3)
+            mask_isolated     = densities < density_thresh      # isolated (low-density)
+            mask_non_isolated = ~mask_isolated                  # non-isolated (normal / dense)
 
+            # ----------------------------------------
+            # Global CL: only on NON-isolated zeolites
+            # ----------------------------------------
+            if mask_non_isolated.sum() >= 2:
+                cl_global = supervised_nt_xent(
+                    z_embed=z_norm[mask_non_isolated],
+                    group_ids=gids_masked[mask_non_isolated],
+                    temperature=getattr(args, "cl_temperature", 0.2),
+                )
+
+            # ----------------------------------------
+            # Local CL: only on ISOLATED (low-density) zeolites
+            # ----------------------------------------
+            if mask_isolated.sum() >= 2:
+                cl_local = supervised_nt_xent(
+                    z_embed=z_norm[mask_isolated],
+                    group_ids=gids_masked[mask_isolated],
+                    temperature=getattr(args, "cl_temperature", 0.2),
+                )
+
+        # === Combine losses ===
+        lambda_global = args.lambda_contrastive          # e.g. set to 0.1 in args
+        lambda_local  = args.lambda_contrastive_local
+
+        total_loss = (
+            ranking_loss
+            + lambda_global * cl_global
+            + lambda_local  * cl_local
+        )
+            
         loss_sum += total_loss.item()
         iter_count += 1
         total_loss.backward()
@@ -208,11 +245,16 @@ def train(
             gnorm = compute_gnorm(model)
             loss_avg = loss_sum / iter_count if iter_count > 0 else 0
             loss_sum, iter_count = 0, 0
-            debug(f"Loss = {loss_avg:.4e}, ListNET = {ranking_loss.item():.4e}, CL = {contrastive_loss.item():.4e}, PNorm = {pnorm:.4f}, GNorm = {gnorm:.4f}, LR = {lrs[0]:.4e}")
+            debug(
+                f"Loss = {loss_avg:.4e}, "
+                f"ListNET = {ranking_loss.item():.4e}, "
+                f"CL_global = {cl_global.item():.4e}, "
+                f"CL_local = {cl_local.item():.4e}, "
+                f"PNorm = {pnorm:.4f}, GNorm = {gnorm:.4f}, LR = {lrs[0]:.4e}"
+            )
             if writer is not None:
                 writer.add_scalar("train_total", loss_avg, n_iter)
                 writer.add_scalar("train_rank", ranking_loss.item(), n_iter)
-                writer.add_scalar("param_norm", pnorm, n_iter)
-                writer.add_scalar("gradient_norm", gnorm, n_iter)
-
+                writer.add_scalar("train_cl_global", cl_global.item(), n_iter)
+                writer.add_scalar("train_cl_local", cl_local.item(), n_iter)
     return n_iter
