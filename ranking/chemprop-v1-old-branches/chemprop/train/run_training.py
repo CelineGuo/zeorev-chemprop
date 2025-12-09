@@ -4,7 +4,7 @@ import os
 from typing import Dict, List
 
 import numpy as np
-from collections import Counter
+from sklearn.cluster import KMeans
 import warnings
 warnings.filterwarnings("ignore", category=np.VisibleDeprecationWarning) 
 import pandas as pd
@@ -12,8 +12,7 @@ from tensorboardX import SummaryWriter
 import torch
 from tqdm import trange
 from torch.optim.lr_scheduler import ExponentialLR
-from torch.utils.data import WeightedRandomSampler
-from torch.utils.data import DataLoader
+from sklearn.neighbors import NearestNeighbors
 
 from .evaluate import evaluate, evaluate_predictions
 from .predict import predict
@@ -104,6 +103,77 @@ def run_training(args: TrainArgs,
                                                      num_folds=args.num_folds,
                                                      args=args,
                                                      logger=logger)
+
+    # ----------------------------------------
+    # Compute zeolite density once (kNN)
+    # ----------------------------------------
+
+    # features = data.features()                    # [N, D]
+    # zeolite_ids = features_to_group_ids(features_batch=data.features(), device=args.device).cpu().numpy()
+
+    # X = np.stack(features).astype(float)
+
+    # k = 10
+    # nbrs = NearestNeighbors(n_neighbors=k+1).fit(X)
+    # distances, _ = nbrs.kneighbors(X)
+
+    # density_values = 1 / (distances[:, 1:].mean(axis=1) + 1e-8)
+
+    # density_values = (density_values - density_values.min()) / (density_values.max() - density_values.min())
+
+    # zeolite_density = {str(z): float(d) for z, d in zip(zeolite_ids, density_values)}
+
+    # # Make available to train()
+    # args.zeolite_density = zeolite_density
+    
+    # ----------------------------------------
+    # 1) Density on TRAIN data (kNN)
+    # ----------------------------------------
+    train_features = train_data.features()                     # [N_train, D]
+    X = np.stack(train_features).astype(float)
+
+    k = getattr(args, "density_knn_k", 10)
+    nbrs = NearestNeighbors(n_neighbors=k + 1).fit(X)
+    distances, _ = nbrs.kneighbors(X)
+
+    density_raw = 1.0 / (distances[:, 1:].mean(axis=1) + 1e-8)
+    dmin, dmax = density_raw.min(), density_raw.max()
+    density_norm = (density_raw - dmin) / (dmax - dmin + 1e-8)
+
+    # ----------------------------------------
+    # 2) Group IDs (same function you use in train())
+    # ----------------------------------------
+    train_group_ids = features_to_group_ids(
+        features_batch=train_features,
+        device=args.device
+    ).cpu().numpy()  # shape [N_train]
+
+    zeolite_density = {}
+    for gid, dens in zip(train_group_ids, density_norm):
+        zeolite_density[str(int(gid))] = float(dens)
+
+    # ----------------------------------------
+    # 3) Positive counts per zeolite for ListNet weighting
+    # ----------------------------------------
+    pos_count: Dict[str, int] = {}
+
+    for dp, gid in zip(train_data, train_group_ids):
+        gid_str = str(int(gid))
+
+        # dp.targets is a list; for ranking you use the first element
+        t = dp.targets[0]
+
+        if t is not None and t > 0:
+            pos_count[gid_str] = pos_count.get(gid_str, 0) + 1
+        else:
+            # make sure every gid exists in dict
+            pos_count.setdefault(gid_str, 0)
+
+    # ----------------------------------------
+    # 4) Save to args
+    # ----------------------------------------
+    args.zeolite_density = zeolite_density
+    args.zeolite_pos_count = pos_count
 
     if args.dataset_type == 'classification':
         class_sizes = get_class_sizes(data)
