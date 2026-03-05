@@ -48,17 +48,14 @@ def generate_artificial_data(
     # Identity similarity (each zeolite only similar to itself)
     zeo_sims = np.eye(len(zeo_codes))
 
-    # Empty descriptor dictionary placeholder
-    zeo_desc_dict = {z: {} for z in zeo_codes}
-
-    # === Prepare OSDA fingerprints ===
+    #Prepare OSDA fingerprints
     unique_osdas = pd.unique(df[osda_col])
     osda_fps = {smi: smiles_to_fp(smi) for smi in unique_osdas if pd.notna(smi)}
     fps = {smi: AllChem.GetMorganFingerprint(Chem.MolFromSmiles(smi), 2) for smi in osda_fps}
     def osda_sim(o1, o2):
         return DataStructs.TanimotoSimilarity(fps[o1], fps[o2])
 
-    # === Unique key tracker ===
+    #Unique key tracker
     df["synth_key"] = df[[osda_col, zeolite_col, class_col]].astype(str).agg("_".join, axis=1)
     existing_keys = set(df["synth_key"])
 
@@ -174,7 +171,7 @@ def generate_artificial_data(
 
     return final_df, artificial_data_df
 
-INPUT_FILE = "/home/CelineGuo73/zeolites/data/want_to_gen.csv"
+INPUT_FILE = ".../want_to_gen.csv"
 df = pd.read_csv(INPUT_FILE)
 
 final_df,_ = generate_artificial_data(
@@ -184,4 +181,4 @@ final_df,_ = generate_artificial_data(
     class_col="class"
 )
 
-final_df.to_csv("/home/CelineGuo73/zeolites/ranking/data/train/after_gen.csv", index=False)
+final_df.to_csv(".../ranking/data/artificial_data_gen_result_file/after_gen.csv", index=False)
